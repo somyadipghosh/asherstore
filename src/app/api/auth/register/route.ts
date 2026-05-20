@@ -1,12 +1,8 @@
-import { ID, Users } from "node-appwrite";
-import { hash } from "bcryptjs";
+﻿import { hash } from "bcryptjs";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
-  appwriteErrorResponse,
-  createAccountClient,
-  createAdminClient,
   createProfile,
   getProfileByEmail,
   setSessionCookie,
@@ -27,16 +23,6 @@ const schema = z.object({
   newsletter: z.boolean().optional().default(false),
 });
 
-async function rollbackAuthUserIfNeeded(userId: string) {
-  try {
-    const { client } = createAdminClient();
-    const users = new Users(client);
-    await users.delete(userId);
-  } catch {
-    // Best effort cleanup only.
-  }
-}
-
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
   const parsed = schema.safeParse(body);
@@ -45,63 +31,38 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid payload" }, { status: 400 });
   }
 
+  const normalizedEmail = parsed.data.email.trim().toLowerCase();
+
   try {
-    const { account } = createAccountClient();
-
-    const normalizedEmail = parsed.data.email.trim().toLowerCase();
-    let existing = null;
-
-    try {
-      existing = await getProfileByEmail(normalizedEmail);
-    } catch (error) {
-      return appwriteErrorResponse(error, "Failed to validate existing account");
-    }
-
+    const existing = await getProfileByEmail(normalizedEmail);
     if (existing) {
       return NextResponse.json({ error: "Email already in use" }, { status: 409 });
     }
 
-    const authUser = await account.create(
-      ID.unique(),
-      normalizedEmail,
-      parsed.data.password,
-      parsed.data.name.trim()
-    );
-
     const passwordHash = await hash(parsed.data.password, 12);
 
-    let profile;
+    // Generate a unique userId (cuid-like).
+    const userId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-    try {
-      profile = await createProfile({
-        userId: authUser.$id,
-        email: normalizedEmail,
-        name: parsed.data.name.trim(),
-        favoriteTeam: parsed.data.favoriteTeam.trim(),
-        phone: parsed.data.phone.trim(),
-        newsletter: parsed.data.newsletter,
-        passwordHash,
-        createdAt: new Date().toISOString(),
-      });
-    } catch (error) {
-      await rollbackAuthUserIfNeeded(authUser.$id);
-      return appwriteErrorResponse(error, "Failed to create user profile");
-    }
-
-    try {
-      await account.createEmailPasswordSession(normalizedEmail, parsed.data.password);
-    } catch (error) {
-      return appwriteErrorResponse(error, "Account created but auto-login failed");
-    }
+    const profile = await createProfile({
+      userId,
+      email: normalizedEmail,
+      name: parsed.data.name.trim(),
+      favoriteTeam: parsed.data.favoriteTeam.trim(),
+      phone: parsed.data.phone.trim(),
+      newsletter: parsed.data.newsletter,
+      passwordHash,
+      createdAt: new Date().toISOString(),
+    });
 
     const user = toAuthenticatedUser(profile);
-
     const token = signToken({ id: user.id, email: user.email, role: user.role });
 
     const response = NextResponse.json({ user }, { status: 201 });
     setSessionCookie(response, token);
     return response;
   } catch (error) {
-    return appwriteErrorResponse(error, "Failed to create account");
+    console.error("[auth/register]", error);
+    return NextResponse.json({ error: "Failed to create account" }, { status: 500 });
   }
 }

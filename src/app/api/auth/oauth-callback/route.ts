@@ -95,7 +95,7 @@ export async function GET(request: NextRequest) {
         !existingName ||
         (existingRole !== "user" && existingRole !== "admin")
       ) {
-        profile = await updateProfileOAuthIdentity(profile.$id, {
+        profile = await updateProfileOAuthIdentity(profile.id, {
           userId,
           email,
           name,

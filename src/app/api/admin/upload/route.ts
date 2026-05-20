@@ -1,29 +1,32 @@
-export const runtime = "nodejs";
+﻿export const runtime = "nodejs";
 
-import { ID, Storage } from "node-appwrite";
-import { File as AppwriteFile } from "node-fetch-native-with-agent";
+import { writeFile } from "fs/promises";
+import { join } from "path";
+import crypto from "crypto";
 
 import { assertAdminAccess } from "@/lib/admin-guard";
-import { appwriteConfig, createAdminClient } from "@/lib/appwrite-server";
 
-function getUploadErrorDetails(error: unknown) {
-  if (typeof error !== "object" || error === null) {
-    return { message: "Unknown upload error" };
-  }
+const ALLOWED_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+]);
 
-  const source = error as {
-    message?: unknown;
-    code?: unknown;
-    type?: unknown;
-    response?: unknown;
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+function getExtension(mimeType: string): string {
+  const map: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "image/avif": "avif",
   };
-
-  return {
-    message: typeof source.message === "string" ? source.message : "Failed to upload image",
-    code: typeof source.code === "number" ? source.code : undefined,
-    type: typeof source.type === "string" ? source.type : undefined,
-    response: source.response,
-  };
+  return map[mimeType] || "bin";
 }
 
 export async function POST(request: Request) {
@@ -37,40 +40,37 @@ export async function POST(request: Request) {
     return Response.json({ error: "No file uploaded" }, { status: 400 });
   }
 
-  if (!appwriteConfig.storageBucketId) {
+  const mimeType = file.type || "application/octet-stream";
+
+  if (!ALLOWED_MIME_TYPES.has(mimeType)) {
     return Response.json(
-      { error: "Missing APPWRITE_PRODUCTS_BUCKET_ID configuration" },
-      { status: 500 }
+      { error: `Unsupported file type: ${mimeType}. Allowed: jpeg, png, webp, gif, avif` },
+      { status: 400 }
     );
+  }
+
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    return Response.json({ error: "File too large (max 10 MB)" }, { status: 400 });
   }
 
   try {
     const bytes = await file.arrayBuffer();
-    const uploadFile = new AppwriteFile([bytes], file.name || `upload-${Date.now()}`, {
-      type: file.type || "application/octet-stream",
-    });
+    const buffer = Buffer.from(bytes);
 
-    const { client } = createAdminClient();
-    const storage = new Storage(client);
-    const uploaded = await storage.createFile(
-      appwriteConfig.storageBucketId,
-      ID.unique(),
-      uploadFile
-    );
+    const fileId = crypto.randomUUID();
+    const ext = getExtension(mimeType);
+    const filename = `${fileId}.${ext}`;
 
-    const url = `/api/images/${encodeURIComponent(uploaded.$id)}`;
+    const uploadDir = join(process.cwd(), "public", "uploads");
+    const filePath = join(uploadDir, filename);
 
-    return Response.json({ fileId: uploaded.$id, url });
+    await writeFile(filePath, buffer);
+
+    const url = `/api/images/${encodeURIComponent(fileId)}`;
+
+    return Response.json({ fileId, url });
   } catch (error) {
-    const details = getUploadErrorDetails(error);
-    console.error("[admin/upload] Appwrite upload failed", details);
-
-    return Response.json(
-      {
-        error: details.message,
-        details,
-      },
-      { status: 500 }
-    );
+    console.error("[admin/upload] Failed to save file", error);
+    return Response.json({ error: "Failed to save uploaded file" }, { status: 500 });
   }
 }

@@ -8,6 +8,7 @@ import {
   updateProfileFavoriteTeam,
 } from "@/lib/appwrite-server";
 
+
 export const runtime = "nodejs";
 
 const schema = z.object({
@@ -35,7 +36,7 @@ export async function PATCH(request: Request) {
       return Response.json({ error: "Profile not found" }, { status: 404 });
     }
 
-    const updated = await updateProfileFavoriteTeam(profile.$id, parsed.data.favoriteTeam);
+    const updated = await updateProfileFavoriteTeam(profile.id, parsed.data.favoriteTeam);
 
     return Response.json({ user: toAuthenticatedUser(updated) });
   } catch (error) {

@@ -16,63 +16,6 @@ export function AppProviders({
   const setWishlist = useShopStore((state) => state.setWishlist);
   const logout = useShopStore((state) => state.logout);
 
-  // Block any font loads from assets.appwrite.io. That CDN does not send
-  // Access-Control-Allow-Origin for custom domains, causing CORS errors.
-  // We proxy those fonts through /api/fonts/appwrite/... instead.
-  //
-  // Two attack vectors are covered:
-  //  1. Inline <style> with @font-face — cssRules are accessible; we delete
-  //     the offending rules directly.
-  //  2. <link rel="stylesheet"> pointing to assets.appwrite.io — cross-origin
-  //     CSS blocks cssRules access, so we remove the <link> element itself
-  //     before the browser can fetch the fonts referenced inside it.
-  useEffect(() => {
-    const BLOCKED_HOST = "assets.appwrite.io";
-
-    function purgeAppwriteLinks() {
-      document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]').forEach((el) => {
-        try {
-          if (new URL(el.href).hostname === BLOCKED_HOST) {
-            el.remove();
-          }
-        } catch {
-          // Ignore invalid hrefs.
-        }
-      });
-    }
-
-    function purgeAppwriteFontFaceRules() {
-      for (const sheet of Array.from(document.styleSheets)) {
-        try {
-          const rules = Array.from(sheet.cssRules);
-          for (let i = rules.length - 1; i >= 0; i--) {
-            const rule = rules[i];
-            if (
-              rule instanceof CSSFontFaceRule &&
-              rule.style.getPropertyValue("src").includes(BLOCKED_HOST)
-            ) {
-              sheet.deleteRule(i);
-            }
-          }
-        } catch {
-          // Cross-origin stylesheets block cssRules access — handled via link removal above.
-        }
-      }
-    }
-
-    function cleanup() {
-      purgeAppwriteLinks();
-      purgeAppwriteFontFaceRules();
-    }
-
-    cleanup();
-
-    const observer = new MutationObserver(cleanup);
-    observer.observe(document.head, { childList: true, subtree: true });
-
-    return () => observer.disconnect();
-  }, []);
-
   useEffect(() => {
     let active = true;
 

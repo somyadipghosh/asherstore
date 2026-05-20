@@ -3,7 +3,6 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { account } from "@/lib/appwrite";
 import type { UserProfile } from "@/lib/types";
 import { useShopStore } from "@/store/useShopStore";
 
@@ -62,7 +61,6 @@ export default function AuthCallbackPage() {
 
         if (json.user.email.trim().toLowerCase() !== intendedEmail) {
           await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
-          await account.deleteSession("current").catch(() => null);
 
           setErrorMsg(
             `Google signed you in as ${json.user.email}, but you entered ${intendedEmail}. Choose the correct Google account and try again.`

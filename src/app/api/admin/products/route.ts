@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { assertAdminAccess } from "@/lib/admin-guard";
 import { createProduct, listProducts } from "@/lib/appwrite-products";
-import { appwriteErrorResponse, isAppwriteUnauthorized } from "@/lib/appwrite-server";
+import { appwriteErrorResponse } from "@/lib/appwrite-server";
 
 const sizeEnum = z.enum(["S", "M", "L", "XL", "XXL", "XXXL"]);
 const versionEnum = z.enum(["sublimation", "master", "fan", "player", "special-edition", "clearance", "kids-kit"]);
@@ -114,7 +114,7 @@ function extractFailingField(error: unknown): string | null {
 
 function getAppwriteErrorDetails(error: unknown) {
   if (typeof error !== "object" || error === null) {
-    return { message: "Unknown Appwrite error" };
+    return { message: "Unknown error" };
   }
 
   const source = error as {
@@ -190,26 +190,12 @@ export async function POST(request: Request) {
     const created = await createProduct(payload);
     return Response.json({ product: created }, { status: 201 });
   } catch (error) {
-    if (isAppwriteUnauthorized(error)) {
-      return Response.json(
-        {
-          error:
-            "Appwrite key cannot write products. Update APPWRITE_API_KEY scopes to include database/table write access, then restart/redeploy.",
-        },
-        { status: 500 }
-      );
-    }
-
     const details = getAppwriteErrorDetails(error);
     const failingField = extractFailingField(error);
     console.error("[api/admin/products] create failed", details);
 
     return Response.json(
-      {
-        error: details.message,
-        failingField,
-        details,
-      },
+      { error: details.message, failingField, details },
       { status: details.code && details.code >= 400 && details.code <= 599 ? details.code : 500 }
     );
   }

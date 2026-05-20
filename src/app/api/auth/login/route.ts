@@ -1,16 +1,12 @@
-import { NextResponse } from "next/server";
-import { hash } from "bcryptjs";
+﻿import { NextResponse } from "next/server";
+import { compare } from "bcryptjs";
 import { z } from "zod";
 
 import {
-  appwriteErrorResponse,
-  createAccountClient,
   createProfile,
   getProfileByEmail,
-  getProfileByUserId,
   setSessionCookie,
   toAuthenticatedUser,
-  updateProfilePasswordHash,
 } from "@/lib/appwrite-server";
 import { signToken } from "@/lib/auth";
 
@@ -18,22 +14,8 @@ export const runtime = "nodejs";
 
 const schema = z.object({
   email: z.string().email(),
-  password: z.string().min(8)
+  password: z.string().min(8),
 });
-
-function buildAuthResponse(profile: Parameters<typeof toAuthenticatedUser>[0]) {
-  const user = toAuthenticatedUser(profile);
-  const token = signToken({ id: user.id, email: user.email, role: user.role });
-
-  const response = NextResponse.json({ user });
-  setSessionCookie(response, token);
-  return response;
-}
-
-function hasPasswordHash(profile: Parameters<typeof toAuthenticatedUser>[0]): boolean {
-  const candidate = profile as unknown as { passwordHash?: unknown };
-  return typeof candidate.passwordHash === "string" && candidate.passwordHash.trim().length > 0;
-}
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
@@ -43,50 +25,37 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid payload" }, { status: 400 });
   }
 
-  try {
-    const { account } = createAccountClient();
-    const rawEmail = parsed.data.email.trim();
-    const normalizedEmail = rawEmail.toLowerCase();
-    const password = parsed.data.password;
-    const session = await account.createEmailPasswordSession(normalizedEmail, password);
-    const userId = typeof (session as { userId?: unknown }).userId === "string"
-      ? (session as { userId: string }).userId
-      : null;
+  const normalizedEmail = parsed.data.email.trim().toLowerCase();
+  const password = parsed.data.password;
 
-    if (!userId) {
+  try {
+    const profile = await getProfileByEmail(normalizedEmail);
+
+    if (!profile) {
       return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
 
-    let profile = await getProfileByUserId(userId);
-
-    if (!profile) {
-      profile = await getProfileByEmail(normalizedEmail);
+    if (!profile.passwordHash) {
+      // OAuth-only account — cannot log in with password
+      return NextResponse.json(
+        { error: "This account uses Google sign-in. Please use the Google login option." },
+        { status: 401 }
+      );
     }
 
-    if (!profile) {
-      const passwordHash = await hash(password, 12);
-
-      profile = await createProfile({
-        userId,
-        email: normalizedEmail,
-        name: normalizedEmail.split("@")[0] || "User",
-        favoriteTeam: "",
-        newsletter: false,
-        phone: "",
-        passwordHash,
-        createdAt: new Date().toISOString(),
-      });
+    const valid = await compare(password, profile.passwordHash);
+    if (!valid) {
+      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
 
-    if (!hasPasswordHash(profile)) {
-      const passwordHash = await hash(password, 12);
-      await updateProfilePasswordHash(profile.$id, passwordHash).catch(() => {
-        // Best effort sync only.
-      });
-    }
+    const user = toAuthenticatedUser(profile);
+    const token = signToken({ id: user.id, email: user.email, role: user.role });
 
-    return buildAuthResponse(profile);
+    const response = NextResponse.json({ user });
+    setSessionCookie(response, token);
+    return response;
   } catch (error) {
-    return appwriteErrorResponse(error, "Invalid credentials");
+    console.error("[auth/login]", error);
+    return NextResponse.json({ error: "Login failed" }, { status: 500 });
   }
 }

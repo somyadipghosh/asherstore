@@ -101,7 +101,7 @@ function validateProductPayload(payload: ProductPayload): string[] {
     errors.push("images must contain at least one fileId");
   }
   if (payload.images.some((image) => !image || image.includes("/") || image.includes("http"))) {
-    errors.push("images must contain Appwrite fileId values only");
+    errors.push("images must contain valid fileId values only");
   }
 
   const hasUndefinedOrNull = Object.values(payload).some((value) => value === undefined || value === null);

@@ -1,16 +1,5 @@
-import { ID, Query, type Models } from "node-appwrite";
-
-import { appwriteConfig, createAdminClient } from "@/lib/appwrite-server";
+﻿import { prisma } from "@/lib/prisma";
 import type { Review } from "@/lib/types";
-
-interface ReviewRow {
-  productId?: unknown;
-  userId?: unknown;
-  userName?: unknown;
-  comment?: unknown;
-  rating?: unknown;
-  createdAt?: unknown;
-}
 
 export interface ReviewStats {
   reviewCount: number;
@@ -25,74 +14,41 @@ export interface CreateOrUpdateReviewInput {
   rating: number;
 }
 
-function toReview(doc: Models.Document): Review {
-  const row = doc as unknown as ReviewRow;
-  const userName = typeof row.userName === "string" ? row.userName : "User";
-
-  return {
-    user: userName,
-    comment: typeof row.comment === "string" ? row.comment : "",
-    rating: typeof row.rating === "number" ? row.rating : 0,
-    createdAt:
-      typeof row.createdAt === "string"
-        ? row.createdAt
-        : doc.$createdAt || new Date().toISOString(),
-  };
-}
-
 function roundToTwo(value: number): number {
   return Number(value.toFixed(2));
 }
 
 function computeStats(reviews: Review[]): ReviewStats {
-  if (!reviews.length) {
-    return { reviewCount: 0, averageRating: 0 };
-  }
+  if (!reviews.length) return { reviewCount: 0, averageRating: 0 };
+  const total = reviews.reduce((sum, r) => sum + r.rating, 0);
+  return { reviewCount: reviews.length, averageRating: roundToTwo(total / reviews.length) };
+}
 
-  const total = reviews.reduce((sum, review) => sum + review.rating, 0);
+function mapRow(row: {
+  userName: string;
+  comment: string;
+  rating: number;
+  createdAt: Date;
+}): Review {
   return {
-    reviewCount: reviews.length,
-    averageRating: roundToTwo(total / reviews.length),
+    user: row.userName,
+    comment: row.comment,
+    rating: row.rating,
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
-async function resolveProductDocumentId(productId: string): Promise<string | null> {
-  const { databases } = createAdminClient();
-
-  try {
-    await databases.getDocument(
-      appwriteConfig.databaseId,
-      appwriteConfig.productsCollectionId,
-      productId
-    );
-    return productId;
-  } catch {
-    const result = await databases.listDocuments(
-      appwriteConfig.databaseId,
-      appwriteConfig.productsCollectionId,
-      [Query.equal("id", productId), Query.limit(1)]
-    );
-
-    return result.documents[0]?.$id || null;
-  }
-}
-
 export async function listReviewsForProduct(productId: string, limit = 100): Promise<Review[]> {
-  const normalizedProductId = productId.trim();
-  if (!normalizedProductId) return [];
+  const normalized = productId.trim();
+  if (!normalized) return [];
 
-  const { databases } = createAdminClient();
-  const result = await databases.listDocuments(
-    appwriteConfig.databaseId,
-    appwriteConfig.reviewsCollectionId,
-    [
-      Query.equal("productId", normalizedProductId),
-      Query.orderDesc("createdAt"),
-      Query.limit(limit),
-    ]
-  );
+  const rows = await prisma.review.findMany({
+    where: { productId: normalized },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
 
-  return result.documents.map(toReview);
+  return rows.map(mapRow);
 }
 
 export async function getReviewStatsForProduct(productId: string): Promise<ReviewStats> {
@@ -100,41 +56,53 @@ export async function getReviewStatsForProduct(productId: string): Promise<Revie
   return computeStats(reviews);
 }
 
-export async function getReviewStatsForProducts(productIds: string[]): Promise<Map<string, ReviewStats>> {
-  const uniqueProductIds = Array.from(new Set(productIds.map((id) => id.trim()).filter(Boolean)));
+export async function getReviewStatsForProducts(
+  productIds: string[]
+): Promise<Map<string, ReviewStats>> {
+  const unique = Array.from(new Set(productIds.map((id) => id.trim()).filter(Boolean)));
   const stats = new Map<string, ReviewStats>();
+  if (!unique.length) return stats;
 
-  if (!uniqueProductIds.length) return stats;
+  // Batch query all reviews for all products at once.
+  const rows = await prisma.review.findMany({
+    where: { productId: { in: unique } },
+    select: { productId: true, rating: true },
+  });
 
-  for (const productId of uniqueProductIds) {
-    const reviewStats = await getReviewStatsForProduct(productId);
-    stats.set(productId, reviewStats);
+  const grouped = new Map<string, number[]>();
+  for (const row of rows) {
+    const list = grouped.get(row.productId) ?? [];
+    list.push(row.rating);
+    grouped.set(row.productId, list);
+  }
+
+  for (const productId of unique) {
+    const ratings = grouped.get(productId) ?? [];
+    if (!ratings.length) {
+      stats.set(productId, { reviewCount: 0, averageRating: 0 });
+    } else {
+      const avg = roundToTwo(ratings.reduce((a, b) => a + b, 0) / ratings.length);
+      stats.set(productId, { reviewCount: ratings.length, averageRating: avg });
+    }
   }
 
   return stats;
 }
 
 export async function syncProductReviewAggregate(productId: string): Promise<ReviewStats> {
-  const normalizedProductId = productId.trim();
-  if (!normalizedProductId) {
-    return { reviewCount: 0, averageRating: 0 };
+  const normalized = productId.trim();
+  if (!normalized) return { reviewCount: 0, averageRating: 0 };
+
+  const stats = await getReviewStatsForProduct(normalized);
+
+  try {
+    await prisma.product.update({
+      where: { id: normalized },
+      data: { rating: stats.averageRating, reviewCount: stats.reviewCount },
+    });
+  } catch {
+    // Product might not exist — ignore.
   }
-
-  const stats = await getReviewStatsForProduct(normalizedProductId);
-  const productDocumentId = await resolveProductDocumentId(normalizedProductId);
-
-  if (!productDocumentId) return stats;
-
-  const { databases } = createAdminClient();
-  await databases.updateDocument(
-    appwriteConfig.databaseId,
-    appwriteConfig.productsCollectionId,
-    productDocumentId,
-    {
-      rating: stats.averageRating,
-      reviewCount: stats.reviewCount,
-    } as unknown as Partial<Models.Document>
-  );
 
   return stats;
 }
@@ -148,45 +116,15 @@ export async function createOrUpdateReview(
   const comment = input.comment.trim();
   const rating = Number(input.rating);
 
-  if (!productId || !userId || !comment) {
-    throw new Error("Invalid review payload");
-  }
-
-  if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+  if (!productId || !userId || !comment) throw new Error("Invalid review payload");
+  if (!Number.isFinite(rating) || rating < 1 || rating > 5)
     throw new Error("Rating must be between 1 and 5");
-  }
 
-  const { databases } = createAdminClient();
-  const existing = await databases.listDocuments(
-    appwriteConfig.databaseId,
-    appwriteConfig.reviewsCollectionId,
-    [Query.equal("productId", productId), Query.equal("userId", userId), Query.limit(1)]
-  );
-
-  const payload = {
-    productId,
-    userId,
-    userName,
-    comment,
-    rating,
-    createdAt: new Date().toISOString(),
-  } as const;
-
-  if (existing.documents[0]) {
-    await databases.updateDocument(
-      appwriteConfig.databaseId,
-      appwriteConfig.reviewsCollectionId,
-      existing.documents[0].$id,
-      payload as unknown as Partial<Models.Document>
-    );
-  } else {
-    await databases.createDocument(
-      appwriteConfig.databaseId,
-      appwriteConfig.reviewsCollectionId,
-      ID.unique(),
-      payload
-    );
-  }
+  await prisma.review.upsert({
+    where: { productId_userId: { productId, userId } },
+    update: { userName, comment, rating, createdAt: new Date() },
+    create: { productId, userId, userName, comment, rating },
+  });
 
   const stats = await syncProductReviewAggregate(productId);
   const reviews = await listReviewsForProduct(productId, 100);

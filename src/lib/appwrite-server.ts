@@ -1,13 +1,8 @@
-import { cookies } from "next/headers";
+﻿import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import {
-  Account,
-  Client,
-  Databases,
-  Query,
-  type Models,
-} from "node-appwrite";
+import { Account, Client, Users } from "node-appwrite";
 
+import { prisma } from "@/lib/prisma";
 import { verifyToken } from "@/lib/auth";
 
 export type AppRole = "user" | "admin";
@@ -23,19 +18,32 @@ export interface AuthenticatedUser {
   newsletter: boolean;
 }
 
-export const APPWRITE_SESSION_COOKIE = "asherstore-session";
-const SESSION_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days — persistent login
+/** Shape returned by all profile DB helpers (mirrors Prisma UserProfile). */
+export interface UserProfileRecord {
+  id: string;
+  userId: string;
+  email: string;
+  name: string;
+  role: string;
+  passwordHash?: string | null;
+  favoriteTeam: string;
+  phone: string;
+  newsletter: boolean;
+  createdAt: Date;
+}
+
+export const SESSION_COOKIE = "asherstore-session";
+/** @deprecated Alias for SESSION_COOKIE – kept for backwards compat */
+export const APPWRITE_SESSION_COOKIE = SESSION_COOKIE;
+
+const SESSION_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
 function getConfiguredAdminEmails(): Set<string> {
-  const source =
-    process.env.ADMIN_EMAILS ||
-    process.env.APPWRITE_ADMIN_EMAILS ||
-    "";
-
+  const source = process.env.ADMIN_EMAILS || "";
   return new Set(
     source
       .split(",")
@@ -53,13 +61,17 @@ export function roleForNewAccount(email: string): AppRole {
   return getConfiguredAdminEmails().has(normalizeEmail(email)) ? "admin" : "user";
 }
 
+// ---------------------------------------------------------------------------
+// Minimal Appwrite config – kept ONLY for OAuth routes (oauth-sync, oauth-callback).
+// No database operations use this anymore.
+// ---------------------------------------------------------------------------
 const isProduction = process.env.NODE_ENV === "production";
 
 function pickByEnv(devValue?: string, prodValue?: string): string {
   return (isProduction ? prodValue : devValue) || "";
 }
 
-function resolveConfig() {
+function resolveAppwriteConfig() {
   const endpoint =
     pickByEnv(
       process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT_DEVELOPMENT || process.env.APPWRITE_ENDPOINT_DEVELOPMENT,
@@ -78,139 +90,40 @@ function resolveConfig() {
 
   return {
     endpoint: (endpoint || "https://nyc.cloud.appwrite.io/v1").trim(),
-    projectId: (projectId || "69c69d1c0001317b3d6a").trim(),
+    projectId: (projectId || "").trim(),
     apiKey: (process.env.APPWRITE_API_KEY || "").trim(),
-    databaseId: (process.env.APPWRITE_DATABASE_ID || "asher_store_db").trim(),
-    profilesCollectionId: (
-      process.env.APPWRITE_COLLECTION_USERS_PROFILE_ID ||
-      process.env.APPWRITE_COLLECTION_PROFILES_ID ||
-      "users_profile"
-    ).trim(),
-    ordersCollectionId: (process.env.APPWRITE_COLLECTION_ORDERS_ID || "orders").trim(),
-    paymentsCollectionId: (
-      process.env.APPWRITE_COLLECTION_ID ||
-      process.env.APPWRITE_COLLECTION_PAYMENTS_ID ||
-      process.env.APPWRITE_COLLECTION_ORDERS_ID ||
-      "orders"
-    ).trim(),
-    productsCollectionId: (process.env.APPWRITE_COLLECTION_PRODUCTS_ID || "products").trim(),
-    storageBucketId: (
-      process.env.APPWRITE_PRODUCTS_BUCKET_ID ||
-      process.env.APPWRITE_BUCKET_ID ||
-      process.env.NEXT_PUBLIC_APPWRITE_PRODUCTS_BUCKET_ID ||
-      "products-images"
-    ).trim(),
-    teamsCollectionId: (process.env.APPWRITE_COLLECTION_TEAMS_ID || "teams").trim(),
-    wishlistCollectionId: (process.env.APPWRITE_COLLECTION_WISHLISTS_ID || "wishlists").trim(),
-    reviewsCollectionId: (process.env.APPWRITE_COLLECTION_REVIEWS_ID || "reviews").trim(),
   } as const;
 }
 
-export const appwriteConfig = resolveConfig();
+/** Minimal config used only by OAuth routes. */
+export const appwriteConfig = resolveAppwriteConfig();
 
-function withTimeout<T>(promise: Promise<T>, ms = 8000, label = "Appwrite"): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} call timed out after ${ms}ms`)), ms)
-    ),
-  ]);
-}
-
-function getAppwriteErrorMessage(error: unknown): string {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof (error as { message?: unknown }).message === "string"
-  )
-    ? (error as { message: string }).message.toLowerCase()
-    : "";
-}
-
-function isUnknownAttributeError(error: unknown, attribute: string): boolean {
-  const message = getAppwriteErrorMessage(error);
-  return message.includes("unknown attribute") && message.includes(attribute.toLowerCase());
-}
-
-function isMissingRequiredAttributeError(error: unknown, attribute: string): boolean {
-  const message = getAppwriteErrorMessage(error);
-  return message.includes("missing required attribute") && message.includes(attribute.toLowerCase());
-}
-
-function isProfileSchemaMismatchError(error: unknown): boolean {
-  return (
-    isUnknownAttributeError(error, "favoriteTeam") ||
-    isUnknownAttributeError(error, "favoriteTeams") ||
-    isMissingRequiredAttributeError(error, "favoriteTeam") ||
-    isMissingRequiredAttributeError(error, "favoriteTeams") ||
-    isUnknownAttributeError(error, "passwordHash") ||
-    isMissingRequiredAttributeError(error, "passwordHash") ||
-    isUnknownAttributeError(error, "createdAt") ||
-    isMissingRequiredAttributeError(error, "createdAt")
-  );
-}
-
-function toStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string");
-}
-
-function mapProfileDoc(profileDoc: Models.Document): AuthenticatedUser {
-  const profile = profileDoc as unknown as Record<string, unknown>;
-  const userId = typeof profile.userId === "string" ? profile.userId : profileDoc.$id;
-  const email = typeof profile.email === "string" ? profile.email : "";
-  const favoriteTeam =
-    typeof profile.favoriteTeam === "string"
-      ? profile.favoriteTeam
-      : toStringList(profile.favoriteTeams)[0] || "";
-
-  return {
-    id: userId,
-    name: typeof profile.name === "string" ? profile.name : "User",
-    email,
-    role: resolveRole(profile.role, email),
-    favoriteTeam,
-    favoriteTeams: favoriteTeam ? [favoriteTeam] : toStringList(profile.favoriteTeams),
-    phone: (profile.phone as string) || "",
-    newsletter: Boolean(profile.newsletter),
-  };
-}
-
-export function createAccountClient() {
-  const config = resolveConfig();
-
-  const client = new Client()
-    .setEndpoint(config.endpoint)
-    .setProject(config.projectId);
-
-  return {
-    client,
-    account: new Account(client),
-  };
-}
-
+/** Creates an admin Appwrite client (OAuth routes only — NOT for DB). */
 export function createAdminClient() {
-  const config = resolveConfig();
-
-  if (!config.apiKey) {
-    throw new Error("Missing APPWRITE_API_KEY. Add it to your env file.");
-  }
-
+  const config = resolveAppwriteConfig();
   const client = new Client()
     .setEndpoint(config.endpoint)
     .setProject(config.projectId)
     .setKey(config.apiKey);
-
-  return {
-    client,
-    databases: new Databases(client),
-  };
+  return { client };
 }
+
+/** Creates an account-scoped Appwrite client (OAuth routes only). */
+export function createAccountClient() {
+  const config = resolveAppwriteConfig();
+  const client = new Client()
+    .setEndpoint(config.endpoint)
+    .setProject(config.projectId);
+  return { client, account: new Account(client) };
+}
+
+// ---------------------------------------------------------------------------
+// Session / cookie helpers
+// ---------------------------------------------------------------------------
 
 export async function getSessionSecretFromCookies(): Promise<string | null> {
   const cookieStore = await cookies();
-  return cookieStore.get(APPWRITE_SESSION_COOKIE)?.value || null;
+  return cookieStore.get(SESSION_COOKIE)?.value || null;
 }
 
 export function setSessionCookie(
@@ -224,7 +137,7 @@ export function setSessionCookie(
 
   const maxAge = Math.max(1, Math.floor((expiry.getTime() - Date.now()) / 1000));
 
-  response.cookies.set(APPWRITE_SESSION_COOKIE, sessionSecret, {
+  response.cookies.set(SESSION_COOKIE, sessionSecret, {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
@@ -235,7 +148,7 @@ export function setSessionCookie(
 }
 
 export function clearSessionCookie(response: NextResponse) {
-  response.cookies.set(APPWRITE_SESSION_COOKIE, "", {
+  response.cookies.set(SESSION_COOKIE, "", {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
@@ -244,36 +157,39 @@ export function clearSessionCookie(response: NextResponse) {
   });
 }
 
-export async function getProfileByUserId(userId: string): Promise<Models.Document | null> {
-  const config = resolveConfig();
-  const { databases } = createAdminClient();
-  const list = await withTimeout(
-    databases.listDocuments(
-      config.databaseId,
-      config.profilesCollectionId,
-      [Query.equal("userId", userId), Query.limit(1)]
-    ),
-    8000,
-    "getProfileByUserId"
-  );
+// ---------------------------------------------------------------------------
+// Profile → AuthenticatedUser mapping
+// ---------------------------------------------------------------------------
 
-  return list.documents[0] || null;
+function mapProfile(profile: UserProfileRecord): AuthenticatedUser {
+  const favoriteTeam = profile.favoriteTeam || "";
+
+  return {
+    id: profile.userId,
+    name: profile.name || "User",
+    email: profile.email,
+    role: resolveRole(profile.role, profile.email),
+    favoriteTeam,
+    favoriteTeams: favoriteTeam ? [favoriteTeam] : [],
+    phone: profile.phone || "",
+    newsletter: Boolean(profile.newsletter),
+  };
 }
 
-export async function getProfileByEmail(email: string): Promise<Models.Document | null> {
-  const config = resolveConfig();
-  const { databases } = createAdminClient();
-  const list = await withTimeout(
-    databases.listDocuments(
-      config.databaseId,
-      config.profilesCollectionId,
-      [Query.equal("email", email), Query.limit(1)]
-    ),
-    8000,
-    "getProfileByEmail"
-  );
+export function toAuthenticatedUser(profile: UserProfileRecord): AuthenticatedUser {
+  return mapProfile(profile);
+}
 
-  return list.documents[0] || null;
+// ---------------------------------------------------------------------------
+// Profile DB helpers (Prisma)
+// ---------------------------------------------------------------------------
+
+export async function getProfileByUserId(userId: string): Promise<UserProfileRecord | null> {
+  return prisma.userProfile.findUnique({ where: { userId } });
+}
+
+export async function getProfileByEmail(email: string): Promise<UserProfileRecord | null> {
+  return prisma.userProfile.findUnique({ where: { email: email.trim().toLowerCase() } });
 }
 
 export async function createProfile(params: {
@@ -286,217 +202,69 @@ export async function createProfile(params: {
   newsletter?: boolean;
   passwordHash?: string;
   createdAt?: string;
-}): Promise<Models.Document> {
-  const config = resolveConfig();
-  const { databases } = createAdminClient();
-  const teamName = params.favoriteTeam?.trim() || "";
-  const passwordHash = params.passwordHash?.trim() || "";
-  const hasPasswordHash = Boolean(passwordHash);
-  const basePayload = {
-    userId: params.userId,
-    email: params.email,
-    name: params.name,
-    role: params.role || roleForNewAccount(params.email),
-    phone: params.phone || "",
-    newsletter: params.newsletter ?? false,
-  };
-  const createdAt = params.createdAt || new Date().toISOString();
+}): Promise<UserProfileRecord> {
+  const role = params.role ?? roleForNewAccount(params.email);
 
-  const payloadVariants: Array<{
-    includeCreatedAt: boolean;
-    useFavoriteTeams: boolean;
-    includePasswordHash: boolean;
-  }> = [
-    {
-      includeCreatedAt: true,
-      useFavoriteTeams: false,
-      includePasswordHash: hasPasswordHash,
+  return prisma.userProfile.create({
+    data: {
+      userId: params.userId,
+      email: params.email.trim().toLowerCase(),
+      name: params.name.trim() || "User",
+      role,
+      favoriteTeam: params.favoriteTeam?.trim() || "",
+      phone: params.phone?.trim() || "",
+      newsletter: params.newsletter ?? false,
+      passwordHash: params.passwordHash?.trim() || null,
     },
-    {
-      includeCreatedAt: true,
-      useFavoriteTeams: true,
-      includePasswordHash: hasPasswordHash,
-    },
-    {
-      includeCreatedAt: false,
-      useFavoriteTeams: false,
-      includePasswordHash: hasPasswordHash,
-    },
-    {
-      includeCreatedAt: false,
-      useFavoriteTeams: true,
-      includePasswordHash: hasPasswordHash,
-    },
-  ];
-
-  if (hasPasswordHash) {
-    payloadVariants.push(
-      {
-        includeCreatedAt: true,
-        useFavoriteTeams: false,
-        includePasswordHash: false,
-      },
-      {
-        includeCreatedAt: true,
-        useFavoriteTeams: true,
-        includePasswordHash: false,
-      },
-      {
-        includeCreatedAt: false,
-        useFavoriteTeams: false,
-        includePasswordHash: false,
-      },
-      {
-        includeCreatedAt: false,
-        useFavoriteTeams: true,
-        includePasswordHash: false,
-      }
-    );
-  }
-
-  let lastError: unknown = null;
-
-  for (const variant of payloadVariants) {
-    const payload: Record<string, unknown> = {
-      ...basePayload,
-      ...(variant.includeCreatedAt ? { createdAt } : {}),
-      ...(variant.includePasswordHash ? { passwordHash } : {}),
-      ...(variant.useFavoriteTeams
-        ? { favoriteTeams: teamName ? [teamName] : [] }
-        : { favoriteTeam: teamName }),
-    };
-
-    try {
-      return await databases.createDocument<Models.DefaultDocument>(
-        config.databaseId,
-        config.profilesCollectionId,
-        params.userId,
-        payload,
-        []
-      );
-    } catch (error) {
-      lastError = error;
-
-      if (!isProfileSchemaMismatchError(error)) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
+  });
 }
 
 export async function updateProfileFavoriteTeam(
-  profileDocumentId: string,
+  profileId: string,
   favoriteTeam: string
-): Promise<Models.Document> {
-  const config = resolveConfig();
-  const { databases } = createAdminClient();
-  const teamName = favoriteTeam.trim();
-  const favoriteTeamPayload = { favoriteTeam: teamName } as unknown as Partial<Models.Document>;
-  const favoriteTeamsPayload = {
-    favoriteTeams: teamName ? [teamName] : [],
-  } as unknown as Partial<Models.Document>;
-
-  try {
-    return await databases.updateDocument(
-      config.databaseId,
-      config.profilesCollectionId,
-      profileDocumentId,
-      favoriteTeamPayload
-    );
-  } catch (error) {
-    const shouldRetryWithFavoriteTeams =
-      isUnknownAttributeError(error, "favoriteTeam") ||
-      isMissingRequiredAttributeError(error, "favoriteTeams");
-
-    if (!shouldRetryWithFavoriteTeams) {
-      throw error;
-    }
-
-    return databases.updateDocument(
-      config.databaseId,
-      config.profilesCollectionId,
-      profileDocumentId,
-      favoriteTeamsPayload
-    );
-  }
+): Promise<UserProfileRecord> {
+  return prisma.userProfile.update({
+    where: { id: profileId },
+    data: { favoriteTeam: favoriteTeam.trim() },
+  });
 }
 
 export async function updateProfilePasswordHash(
-  profileDocumentId: string,
+  profileId: string,
   passwordHash: string
 ): Promise<void> {
-  const normalizedHash = passwordHash.trim();
-  if (!normalizedHash) return;
+  const normalized = passwordHash.trim();
+  if (!normalized) return;
 
-  const config = resolveConfig();
-  const { databases } = createAdminClient();
-
-  try {
-    await databases.updateDocument(
-      config.databaseId,
-      config.profilesCollectionId,
-      profileDocumentId,
-      { passwordHash: normalizedHash } as unknown as Partial<Models.Document>
-    );
-  } catch (error) {
-    if (isUnknownAttributeError(error, "passwordHash")) {
-      return;
-    }
-
-    throw error;
-  }
+  await prisma.userProfile.update({
+    where: { id: profileId },
+    data: { passwordHash: normalized },
+  });
 }
 
 export async function updateProfileOAuthIdentity(
-  profileDocumentId: string,
+  profileId: string,
   params: {
     userId: string;
     email: string;
     name: string;
     role: AppRole;
   }
-): Promise<Models.Document> {
-  const config = resolveConfig();
-  const { databases } = createAdminClient();
-
-  const payloadWithRole = {
-    userId: params.userId,
-    email: params.email,
-    name: params.name,
-    role: params.role,
-  } as unknown as Partial<Models.Document>;
-
-  try {
-    return await databases.updateDocument(
-      config.databaseId,
-      config.profilesCollectionId,
-      profileDocumentId,
-      payloadWithRole
-    );
-  } catch (error) {
-    // Some legacy schemas may not have a role column. Keep OAuth identity in sync anyway.
-    if (!isUnknownAttributeError(error, "role")) {
-      throw error;
-    }
-
-    return databases.updateDocument(
-      config.databaseId,
-      config.profilesCollectionId,
-      profileDocumentId,
-      {
-        userId: params.userId,
-        email: params.email,
-        name: params.name,
-      } as unknown as Partial<Models.Document>
-    );
-  }
+): Promise<UserProfileRecord> {
+  return prisma.userProfile.update({
+    where: { id: profileId },
+    data: {
+      userId: params.userId,
+      email: params.email.trim().toLowerCase(),
+      name: params.name.trim() || "User",
+      role: params.role,
+    },
+  });
 }
 
-export function toAuthenticatedUser(profileDoc: Models.Document): AuthenticatedUser {
-  return mapProfileDoc(profileDoc);
-}
+// ---------------------------------------------------------------------------
+// getCurrentUser – reads JWT from cookie, fetches profile from DB
+// ---------------------------------------------------------------------------
 
 export async function getCurrentUser(): Promise<AuthenticatedUser | null> {
   const token = await getSessionSecretFromCookies();
@@ -507,11 +275,15 @@ export async function getCurrentUser(): Promise<AuthenticatedUser | null> {
 
   try {
     const profile = await getProfileByUserId(payload.id);
-    return profile ? mapProfileDoc(profile) : null;
+    return profile ? mapProfile(profile) : null;
   } catch {
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Error helpers
+// ---------------------------------------------------------------------------
 
 export function appwriteErrorResponse(error: unknown, fallbackMessage: string) {
   const status =
@@ -536,6 +308,7 @@ export function appwriteErrorResponse(error: unknown, fallbackMessage: string) {
   );
 }
 
+/** Generic unauthorised-error check (HTTP 401). */
 export function isAppwriteUnauthorized(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -544,3 +317,6 @@ export function isAppwriteUnauthorized(error: unknown): boolean {
     (error as { code?: unknown }).code === 401
   );
 }
+
+// Keep Users export for OAuth routes that need it.
+export { Users };
