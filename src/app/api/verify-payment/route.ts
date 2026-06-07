@@ -2,7 +2,7 @@
 import { z } from "zod";
 
 import { appwriteErrorResponse, getCurrentUser } from "@/lib/appwrite-server";
-import { prisma } from "@/lib/prisma";
+import { createOrder } from "@/lib/appwrite-orders";
 import { checkoutItemsSchema, priceCheckoutItems } from "@/lib/checkout-payment";
 import { fetchRazorpayOrder, fetchRazorpayPayment } from "@/lib/razorpay-api";
 import { getRazorpayServerConfig } from "@/lib/razorpay-config";
@@ -77,16 +77,14 @@ export async function POST(request: Request) {
       return Response.json({ error: "Payment is not captured" }, { status: 400 });
     }
 
-    const order = await prisma.order.create({
-      data: {
-        userId: user.id,
-        userEmail: user.email,
-        items: pricedItems,
-        total: totalRupees,
-        currency: parsed.data.currency,
-        paymentStatus: "paid",
-        shippingStatus: "processing",
-      },
+    const order = await createOrder({
+      userId: user.id,
+      userEmail: user.email,
+      items: pricedItems,
+      total: totalRupees,
+      currency: parsed.data.currency,
+      paymentStatus: "paid",
+      shippingStatus: "processing",
     });
 
     return Response.json({
@@ -98,7 +96,7 @@ export async function POST(request: Request) {
         amount: totalRupees,
         status: "paid",
         userId: user.id,
-        createdAt: order.createdAt.toISOString(),
+        createdAt: order.createdAt,
       },
       commerceOrderId: order.id,
     });

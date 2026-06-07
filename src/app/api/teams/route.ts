@@ -1,7 +1,7 @@
 ﻿export const runtime = "nodejs";
 
-import { prisma } from "@/lib/prisma";
 import { appwriteErrorResponse } from "@/lib/appwrite-server";
+import { listProducts } from "@/lib/appwrite-products";
 
 const TEAMS_CACHE_TTL_MS = 60_000;
 
@@ -11,7 +11,10 @@ let teamsCache: { teams: TeamOption[]; expiresAt: number } | null = null;
 
 function getCachedTeams(): TeamOption[] | null {
   if (!teamsCache) return null;
-  if (Date.now() > teamsCache.expiresAt) { teamsCache = null; return null; }
+  if (Date.now() > teamsCache.expiresAt) {
+    teamsCache = null;
+    return null;
+  }
   return teamsCache.teams;
 }
 
@@ -31,18 +34,14 @@ export async function GET() {
     const cached = getCachedTeams();
     if (cached) return teamsResponse(cached);
 
-    // Derive distinct teams from the products table.
-    const rows = await prisma.product.findMany({
-      select: { id: true, team: true },
-      take: 500,
-    });
-
+    const products = await listProducts(500);
     const byName = new Map<string, TeamOption>();
-    for (const row of rows) {
-      const key = row.team.trim().toLowerCase();
+
+    for (const product of products) {
+      const key = product.team.trim().toLowerCase();
       if (!key) continue;
       if (!byName.has(key)) {
-        byName.set(key, { id: `team-${row.id}`, name: row.team.trim() });
+        byName.set(key, { id: `team-${product.id}`, name: product.team.trim() });
       }
     }
 

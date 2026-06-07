@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { Bebas_Neue, Space_Grotesk } from "next/font/google";
 
 import { AppProviders } from "@/components/layout/AppProviders";
+import AppwritePing from "@/components/layout/AppwritePing";
 import { Footer } from "@/components/layout/Footer";
 import { Navbar } from "@/components/layout/Navbar";
 import "./globals.css";
@@ -49,6 +50,7 @@ export default async function RootLayout({
     >
       <body className="min-h-full bg-zinc-950 text-zinc-100">
         <AppProviders hasSessionCookie={hasSessionCookie}>
+          <AppwritePing />
           <Navbar />
           <main className="flex min-h-[calc(100vh-73px)] flex-col">{children}</main>
           <Footer />

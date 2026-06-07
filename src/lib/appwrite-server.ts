@@ -1,8 +1,7 @@
 ﻿import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { Account, Client, Users } from "node-appwrite";
+import { Account, Client, Databases, Query, Users } from "node-appwrite";
 
-import { prisma } from "@/lib/prisma";
 import { verifyToken } from "@/lib/auth";
 
 export type AppRole = "user" | "admin";
@@ -18,7 +17,7 @@ export interface AuthenticatedUser {
   newsletter: boolean;
 }
 
-/** Shape returned by all profile DB helpers (mirrors Prisma UserProfile). */
+/** Shape returned by all profile DB helpers. */
 export interface UserProfileRecord {
   id: string;
   userId: string;
@@ -62,8 +61,7 @@ export function roleForNewAccount(email: string): AppRole {
 }
 
 // ---------------------------------------------------------------------------
-// Minimal Appwrite config – kept ONLY for OAuth routes (oauth-sync, oauth-callback).
-// No database operations use this anymore.
+// Appwrite config and database helpers
 // ---------------------------------------------------------------------------
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -95,10 +93,10 @@ function resolveAppwriteConfig() {
   } as const;
 }
 
-/** Minimal config used only by OAuth routes. */
+/** Appwrite configuration used by server-side auth and DB helpers. */
 export const appwriteConfig = resolveAppwriteConfig();
 
-/** Creates an admin Appwrite client (OAuth routes only — NOT for DB). */
+/** Creates an admin Appwrite client. */
 export function createAdminClient() {
   const config = resolveAppwriteConfig();
   const client = new Client()
@@ -108,18 +106,12 @@ export function createAdminClient() {
   return { client };
 }
 
-/** Creates an account-scoped Appwrite client (OAuth routes only). */
+/** Creates an account-scoped Appwrite client. */
 export function createAccountClient() {
   const config = resolveAppwriteConfig();
-  const client = new Client()
-    .setEndpoint(config.endpoint)
-    .setProject(config.projectId);
+  const client = new Client().setEndpoint(config.endpoint).setProject(config.projectId);
   return { client, account: new Account(client) };
 }
-
-// ---------------------------------------------------------------------------
-// Session / cookie helpers
-// ---------------------------------------------------------------------------
 
 export async function getSessionSecretFromCookies(): Promise<string | null> {
   const cookieStore = await cookies();
@@ -157,10 +149,6 @@ export function clearSessionCookie(response: NextResponse) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Profile → AuthenticatedUser mapping
-// ---------------------------------------------------------------------------
-
 function mapProfile(profile: UserProfileRecord): AuthenticatedUser {
   const favoriteTeam = profile.favoriteTeam || "";
 
@@ -180,16 +168,80 @@ export function toAuthenticatedUser(profile: UserProfileRecord): AuthenticatedUs
   return mapProfile(profile);
 }
 
-// ---------------------------------------------------------------------------
-// Profile DB helpers (Prisma)
-// ---------------------------------------------------------------------------
+export function createAdminDatabase() {
+  const { client } = createAdminClient();
+  return new Databases(client);
+}
+
+function isAppwriteNotFound(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === 404
+  );
+}
+
+function mapProfileDocument(doc: Record<string, unknown>): UserProfileRecord {
+  const id = typeof doc.$id === "string" ? doc.$id : typeof doc.id === "string" ? doc.id : "";
+  const userId = typeof doc.userId === "string" ? doc.userId : id;
+  const email = typeof doc.email === "string" ? doc.email : "";
+  const name = typeof doc.name === "string" ? doc.name : "";
+  const role = typeof doc.role === "string" ? doc.role : "user";
+  const passwordHash = typeof doc.passwordHash === "string" ? doc.passwordHash : null;
+  const favoriteTeam = typeof doc.favoriteTeam === "string" ? doc.favoriteTeam : "";
+  const phone = typeof doc.phone === "string" ? doc.phone : "";
+  const newsletter = Boolean(doc.newsletter);
+  const createdAtValue =
+    typeof doc.$createdAt === "string"
+      ? doc.$createdAt
+      : typeof doc.createdAt === "string"
+      ? doc.createdAt
+      : new Date().toISOString();
+
+  return {
+    id,
+    userId,
+    email,
+    name,
+    role,
+    passwordHash,
+    favoriteTeam,
+    phone,
+    newsletter,
+    createdAt: new Date(createdAtValue),
+  };
+}
+
+const profileCollectionId = process.env.APPWRITE_COLLECTION_PROFILES_ID || "";
+const databaseId = process.env.APPWRITE_DATABASE_ID || "";
 
 export async function getProfileByUserId(userId: string): Promise<UserProfileRecord | null> {
-  return prisma.userProfile.findUnique({ where: { userId } });
+  if (!userId) return null;
+  const db = createAdminDatabase();
+
+  try {
+    const profile = await db.getDocument(databaseId, profileCollectionId, userId);
+    return mapProfileDocument(profile as Record<string, unknown>);
+  } catch (error) {
+    if (!isAppwriteNotFound(error)) throw error;
+  }
+
+  try {
+    const response = await db.listDocuments(databaseId, profileCollectionId, [Query.equal("userId", userId), Query.limit(1)]);
+    return response.documents.length ? mapProfileDocument(response.documents[0] as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function getProfileByEmail(email: string): Promise<UserProfileRecord | null> {
-  return prisma.userProfile.findUnique({ where: { email: email.trim().toLowerCase() } });
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const db = createAdminDatabase();
+  const response = await db.listDocuments(databaseId, profileCollectionId, [Query.equal("email", normalized), Query.limit(1)]);
+  return response.documents.length ? mapProfileDocument(response.documents[0] as Record<string, unknown>) : null;
 }
 
 export async function createProfile(params: {
@@ -204,29 +256,32 @@ export async function createProfile(params: {
   createdAt?: string;
 }): Promise<UserProfileRecord> {
   const role = params.role ?? roleForNewAccount(params.email);
+  const db = createAdminDatabase();
 
-  return prisma.userProfile.create({
-    data: {
-      userId: params.userId,
-      email: params.email.trim().toLowerCase(),
-      name: params.name.trim() || "User",
-      role,
-      favoriteTeam: params.favoriteTeam?.trim() || "",
-      phone: params.phone?.trim() || "",
-      newsletter: params.newsletter ?? false,
-      passwordHash: params.passwordHash?.trim() || null,
-    },
+  const profile = await db.createDocument(databaseId, profileCollectionId, params.userId, {
+    userId: params.userId,
+    email: params.email.trim().toLowerCase(),
+    name: params.name.trim() || "User",
+    role,
+    favoriteTeam: params.favoriteTeam?.trim() || "",
+    phone: params.phone?.trim() || "",
+    newsletter: params.newsletter ?? false,
+    passwordHash: params.passwordHash?.trim() || null,
+    createdAt: params.createdAt ?? new Date().toISOString(),
   });
+
+  return mapProfileDocument(profile as Record<string, unknown>);
 }
 
 export async function updateProfileFavoriteTeam(
   profileId: string,
   favoriteTeam: string
 ): Promise<UserProfileRecord> {
-  return prisma.userProfile.update({
-    where: { id: profileId },
-    data: { favoriteTeam: favoriteTeam.trim() },
+  const db = createAdminDatabase();
+  const updated = await db.updateDocument(databaseId, profileCollectionId, profileId, {
+    favoriteTeam: favoriteTeam.trim(),
   });
+  return mapProfileDocument(updated as Record<string, unknown>);
 }
 
 export async function updateProfilePasswordHash(
@@ -235,10 +290,9 @@ export async function updateProfilePasswordHash(
 ): Promise<void> {
   const normalized = passwordHash.trim();
   if (!normalized) return;
-
-  await prisma.userProfile.update({
-    where: { id: profileId },
-    data: { passwordHash: normalized },
+  const db = createAdminDatabase();
+  await db.updateDocument(databaseId, profileCollectionId, profileId, {
+    passwordHash: normalized,
   });
 }
 
@@ -251,15 +305,14 @@ export async function updateProfileOAuthIdentity(
     role: AppRole;
   }
 ): Promise<UserProfileRecord> {
-  return prisma.userProfile.update({
-    where: { id: profileId },
-    data: {
-      userId: params.userId,
-      email: params.email.trim().toLowerCase(),
-      name: params.name.trim() || "User",
-      role: params.role,
-    },
+  const db = createAdminDatabase();
+  const updated = await db.updateDocument(databaseId, profileCollectionId, profileId, {
+    userId: params.userId,
+    email: params.email.trim().toLowerCase(),
+    name: params.name.trim() || "User",
+    role: params.role,
   });
+  return mapProfileDocument(updated as Record<string, unknown>);
 }
 
 // ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ const projectId =
     process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID_PRODUCTION
   ) ||
   process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID ||
-  "69c69d1c0001317b3d6a";
+  "6a24e8cd0033cc19a86e";
 
 const client = new Client()
   .setEndpoint(endpoint)

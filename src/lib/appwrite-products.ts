@@ -1,4 +1,6 @@
-﻿import { prisma } from "@/lib/prisma";
+﻿import { Query } from "node-appwrite";
+
+import { createAdminDatabase } from "@/lib/appwrite-server";
 import { products as demoProducts } from "@/lib/data";
 import type { JerseySize, JerseyVersion, Product, Review } from "@/lib/types";
 import {
@@ -58,42 +60,36 @@ export interface ProductUpsertInput {
   reviews: Review[];
 }
 
-// ---------------------------------------------------------------------------
-// Mapping helpers
-// ---------------------------------------------------------------------------
+const databaseId = process.env.APPWRITE_DATABASE_ID || "";
+const productsCollectionId = process.env.APPWRITE_COLLECTION_PRODUCTS_ID || "";
 
-type PrismaProductRow = {
-  id: string;
-  name: string;
-  team: string;
-  price: number;
-  images: string[];
-  version: string[];
-  sizes: string[];
-  description: string;
-  rating: number;
-  reviewCount: number;
-  tags: string[];
-  isMatchPick: boolean;
-  isBestSeller: boolean;
-  createdAt: Date;
-};
+function mapProductDocument(doc: Record<string, unknown>): Product | null {
+  if (!doc || typeof doc !== "object") return null;
 
-function toProduct(row: PrismaProductRow): Product {
+  const id = typeof doc.$id === "string" ? doc.$id : typeof doc.id === "string" ? doc.id : "";
+  if (!id) return null;
+
+  const images = Array.isArray(doc.images) ? doc.images.filter((item): item is string => typeof item === "string") : [];
+  const version = Array.isArray(doc.version)
+    ? doc.version.filter((item): item is string => typeof item === "string") as JerseyVersion[]
+    : [];
+  const sizes = Array.isArray(doc.sizes) ? doc.sizes.filter((item): item is string => typeof item === "string") as JerseySize[] : [];
+  const tags = Array.isArray(doc.tags) ? doc.tags.filter((item): item is string => typeof item === "string") : [];
+
   return {
-    id: row.id,
-    name: row.name,
-    team: row.team,
-    price: row.price,
-    images: row.images,
-    version: row.version as JerseyVersion[],
-    sizes: row.sizes as JerseySize[],
-    description: row.description,
-    rating: row.rating,
-    reviewCount: row.reviewCount,
-    tags: row.tags,
-    isMatchPick: row.isMatchPick,
-    isBestSeller: row.isBestSeller,
+    id,
+    name: typeof doc.name === "string" ? doc.name : "",
+    team: typeof doc.team === "string" ? doc.team : "",
+    price: typeof doc.price === "number" ? doc.price : 0,
+    images,
+    version,
+    sizes,
+    description: typeof doc.description === "string" ? doc.description : "",
+    rating: typeof doc.rating === "number" ? doc.rating : 1,
+    reviewCount: typeof doc.reviewCount === "number" ? doc.reviewCount : 0,
+    tags,
+    isMatchPick: Boolean(doc.isMatchPick),
+    isBestSeller: Boolean(doc.isBestSeller),
     reviews: [],
   };
 }
@@ -172,6 +168,13 @@ export function filterProducts(products: Product[], filters: ProductFilters): Pr
   });
 }
 
+async function listProductDocuments(queries: unknown[] = [], limit = 200): Promise<Record<string, unknown>[]> {
+  const db = createAdminDatabase();
+  const queryParams = [...queries, Query.limit(limit)] as unknown[];
+  const response = await db.listDocuments(databaseId, productsCollectionId, queryParams as unknown as string[]);
+  return Array.isArray(response.documents) ? response.documents : [];
+}
+
 // ---------------------------------------------------------------------------
 // Read operations
 // ---------------------------------------------------------------------------
@@ -182,12 +185,8 @@ export async function listProducts(limit = 200): Promise<Product[]> {
   if (cached) return cached;
 
   try {
-    const rows = await prisma.product.findMany({
-      orderBy: { createdAt: "desc" },
-      take: limit,
-    });
-
-    const products = await withGenuineReviewStats(rows.map(toProduct));
+    const rows = await listProductDocuments([Query.orderDesc("$createdAt")], limit);
+    const products = await withGenuineReviewStats(rows.map(mapProductDocument).filter((item): item is Product => Boolean(item)));
     setCachedProducts(cacheKey, products);
     return products;
   } catch {
@@ -201,13 +200,8 @@ export async function listBestSellers(limit = 12): Promise<Product[]> {
   if (cached) return cached;
 
   try {
-    const rows = await prisma.product.findMany({
-      where: { isBestSeller: true },
-      orderBy: { createdAt: "desc" },
-      take: limit,
-    });
-
-    const products = await withGenuineReviewStats(rows.map(toProduct));
+    const rows = await listProductDocuments([Query.equal("isBestSeller", true), Query.orderDesc("$createdAt")], limit);
+    const products = await withGenuineReviewStats(rows.map(mapProductDocument).filter((item): item is Product => Boolean(item)));
     setCachedProducts(cacheKey, products);
     return products;
   } catch {
@@ -222,13 +216,8 @@ export async function listMatchdayDeals(limit = 12): Promise<Product[]> {
   if (cached) return cached;
 
   try {
-    const rows = await prisma.product.findMany({
-      where: { isMatchPick: true },
-      orderBy: { createdAt: "desc" },
-      take: limit,
-    });
-
-    const products = await withGenuineReviewStats(rows.map(toProduct));
+    const rows = await listProductDocuments([Query.equal("isMatchPick", true), Query.orderDesc("$createdAt")], limit);
+    const products = await withGenuineReviewStats(rows.map(mapProductDocument).filter((item): item is Product => Boolean(item)));
     setCachedProducts(cacheKey, products);
     return products;
   } catch {
@@ -245,13 +234,8 @@ export async function listProductsByTeam(team: string, limit = 200): Promise<Pro
   if (cached) return cached;
 
   try {
-    const rows = await prisma.product.findMany({
-      where: { team },
-      orderBy: { createdAt: "desc" },
-      take: limit,
-    });
-
-    const products = await withGenuineReviewStats(rows.map(toProduct));
+    const rows = await listProductDocuments([Query.equal("team", team), Query.orderDesc("$createdAt")], limit);
+    const products = await withGenuineReviewStats(rows.map(mapProductDocument).filter((item): item is Product => Boolean(item)));
     setCachedProducts(cacheKey, products);
     return products;
   } catch {
@@ -261,10 +245,11 @@ export async function listProductsByTeam(team: string, limit = 200): Promise<Pro
 
 export async function getProductById(productId: string): Promise<Product | null> {
   try {
-    const row = await prisma.product.findUnique({ where: { id: productId } });
-    if (!row) return getDemoProductById(productId);
+    const db = createAdminDatabase();
+    const row = await db.getDocument(databaseId, productsCollectionId, productId);
+    const product = mapProductDocument(row as Record<string, unknown>);
+    if (!product) return getDemoProductById(productId);
 
-    const product = toProduct(row);
     const [stats, reviews] = await Promise.all([
       getReviewStatsForProduct(product.id),
       listReviewsForProduct(product.id, 100),
@@ -281,26 +266,27 @@ export async function getProductById(productId: string): Promise<Product | null>
 // ---------------------------------------------------------------------------
 
 export async function createProduct(input: ProductUpsertInput): Promise<Product> {
-  const row = await prisma.product.create({
-    data: {
-      id: input.id,
-      name: input.name,
-      team: input.team,
-      price: input.price,
-      images: input.images,
-      version: input.version as string[],
-      sizes: input.sizes as string[],
-      description: input.description,
-      rating: toRating(input.rating),
-      reviewCount: 0,
-      tags: input.tags,
-      isMatchPick: input.isMatchPick,
-      isBestSeller: input.isBestSeller,
-    },
+  const db = createAdminDatabase();
+  const row = await db.createDocument(databaseId, productsCollectionId, input.id, {
+    id: input.id,
+    name: input.name,
+    team: input.team,
+    price: input.price,
+    images: input.images,
+    version: input.version,
+    sizes: input.sizes,
+    description: input.description,
+    rating: toRating(input.rating),
+    reviewCount: 0,
+    tags: input.tags,
+    isMatchPick: input.isMatchPick,
+    isBestSeller: input.isBestSeller,
   });
 
   clearProductCache();
-  return toProduct(row);
+  const product = mapProductDocument(row as Record<string, unknown>);
+  if (!product) throw new Error("Failed to map created product");
+  return product;
 }
 
 export async function updateProduct(
@@ -310,30 +296,29 @@ export async function updateProduct(
   const current = await getProductById(productId);
   if (!current) return null;
 
-  const row = await prisma.product.update({
-    where: { id: productId },
-    data: {
-      ...(patch.name !== undefined && { name: patch.name }),
-      ...(patch.team !== undefined && { team: patch.team }),
-      ...(patch.price !== undefined && { price: patch.price }),
-      ...(patch.images !== undefined && { images: patch.images }),
-      ...(patch.version !== undefined && { version: patch.version as string[] }),
-      ...(patch.sizes !== undefined && { sizes: patch.sizes as string[] }),
-      ...(patch.description !== undefined && { description: patch.description }),
-      ...(patch.rating !== undefined && { rating: toRating(patch.rating) }),
-      ...(patch.tags !== undefined && { tags: patch.tags }),
-      ...(patch.isMatchPick !== undefined && { isMatchPick: patch.isMatchPick }),
-      ...(patch.isBestSeller !== undefined && { isBestSeller: patch.isBestSeller }),
-    },
+  const db = createAdminDatabase();
+  const row = await db.updateDocument(databaseId, productsCollectionId, productId, {
+    ...(patch.name !== undefined && { name: patch.name }),
+    ...(patch.team !== undefined && { team: patch.team }),
+    ...(patch.price !== undefined && { price: patch.price }),
+    ...(patch.images !== undefined && { images: patch.images }),
+    ...(patch.version !== undefined && { version: patch.version }),
+    ...(patch.sizes !== undefined && { sizes: patch.sizes }),
+    ...(patch.description !== undefined && { description: patch.description }),
+    ...(patch.rating !== undefined && { rating: toRating(patch.rating) }),
+    ...(patch.tags !== undefined && { tags: patch.tags }),
+    ...(patch.isMatchPick !== undefined && { isMatchPick: patch.isMatchPick }),
+    ...(patch.isBestSeller !== undefined && { isBestSeller: patch.isBestSeller }),
   });
 
   clearProductCache();
-  return toProduct(row);
+  return mapProductDocument(row as Record<string, unknown>);
 }
 
 export async function deleteProduct(productId: string): Promise<boolean> {
   try {
-    await prisma.product.delete({ where: { id: productId } });
+    const db = createAdminDatabase();
+    await db.deleteDocument(databaseId, productsCollectionId, productId);
     clearProductCache();
     return true;
   } catch {

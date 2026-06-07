@@ -1,5 +1,7 @@
-﻿import { prisma } from "@/lib/prisma";
+﻿import { Query } from "node-appwrite";
 import type { Review } from "@/lib/types";
+
+import { createAdminDatabase } from "@/lib/appwrite-server";
 
 export interface ReviewStats {
   reviewCount: number;
@@ -14,6 +16,10 @@ export interface CreateOrUpdateReviewInput {
   rating: number;
 }
 
+const databaseId = process.env.APPWRITE_DATABASE_ID || "";
+const reviewsCollectionId = process.env.APPWRITE_COLLECTION_REVIEWS_ID || "";
+const productsCollectionId = process.env.APPWRITE_COLLECTION_PRODUCTS_ID || "";
+
 function roundToTwo(value: number): number {
   return Number(value.toFixed(2));
 }
@@ -24,31 +30,39 @@ function computeStats(reviews: Review[]): ReviewStats {
   return { reviewCount: reviews.length, averageRating: roundToTwo(total / reviews.length) };
 }
 
-function mapRow(row: {
-  userName: string;
-  comment: string;
-  rating: number;
-  createdAt: Date;
-}): Review {
+function mapReviewRow(row: Record<string, unknown>): Review {
+  const createdAtValue =
+    typeof row.$createdAt === "string"
+      ? row.$createdAt
+      : typeof row.createdAt === "string"
+      ? row.createdAt
+      : new Date().toISOString();
+
   return {
-    user: row.userName,
-    comment: row.comment,
-    rating: row.rating,
-    createdAt: row.createdAt.toISOString(),
+    user: typeof row.userName === "string" ? row.userName : "User",
+    comment: typeof row.comment === "string" ? row.comment : "",
+    rating: typeof row.rating === "number" ? row.rating : 0,
+    createdAt: new Date(createdAtValue).toISOString(),
   };
+}
+
+async function listReviewDocuments(queries: unknown[] = [], limit = 100) {
+  const db = createAdminDatabase();
+  const queryParams = [...queries, Query.limit(limit)] as unknown[];
+  const response = await db.listDocuments(databaseId, reviewsCollectionId, queryParams as unknown as string[]);
+  return Array.isArray(response.documents) ? response.documents : [];
 }
 
 export async function listReviewsForProduct(productId: string, limit = 100): Promise<Review[]> {
   const normalized = productId.trim();
   if (!normalized) return [];
 
-  const rows = await prisma.review.findMany({
-    where: { productId: normalized },
-    orderBy: { createdAt: "desc" },
-    take: limit,
-  });
+  const rows = await listReviewDocuments([
+    Query.equal("productId", normalized),
+    Query.orderDesc("$createdAt"),
+  ], limit);
 
-  return rows.map(mapRow);
+  return rows.map(mapReviewRow);
 }
 
 export async function getReviewStatsForProduct(productId: string): Promise<ReviewStats> {
@@ -63,17 +77,16 @@ export async function getReviewStatsForProducts(
   const stats = new Map<string, ReviewStats>();
   if (!unique.length) return stats;
 
-  // Batch query all reviews for all products at once.
-  const rows = await prisma.review.findMany({
-    where: { productId: { in: unique } },
-    select: { productId: true, rating: true },
-  });
+  const rows = await listReviewDocuments([Query.limit(5000)], 5000);
 
   const grouped = new Map<string, number[]>();
   for (const row of rows) {
-    const list = grouped.get(row.productId) ?? [];
-    list.push(row.rating);
-    grouped.set(row.productId, list);
+    const productId = typeof row.productId === "string" ? row.productId : "";
+    const rating = typeof row.rating === "number" ? row.rating : NaN;
+    if (!productId || !Number.isFinite(rating)) continue;
+    const list = grouped.get(productId) ?? [];
+    list.push(rating);
+    grouped.set(productId, list);
   }
 
   for (const productId of unique) {
@@ -94,11 +107,12 @@ export async function syncProductReviewAggregate(productId: string): Promise<Rev
   if (!normalized) return { reviewCount: 0, averageRating: 0 };
 
   const stats = await getReviewStatsForProduct(normalized);
+  const db = createAdminDatabase();
 
   try {
-    await prisma.product.update({
-      where: { id: normalized },
-      data: { rating: stats.averageRating, reviewCount: stats.reviewCount },
+    await db.updateDocument(databaseId, productsCollectionId, normalized, {
+      rating: stats.averageRating,
+      reviewCount: stats.reviewCount,
     });
   } catch {
     // Product might not exist — ignore.
@@ -120,11 +134,29 @@ export async function createOrUpdateReview(
   if (!Number.isFinite(rating) || rating < 1 || rating > 5)
     throw new Error("Rating must be between 1 and 5");
 
-  await prisma.review.upsert({
-    where: { productId_userId: { productId, userId } },
-    update: { userName, comment, rating, createdAt: new Date() },
-    create: { productId, userId, userName, comment, rating },
-  });
+  const db = createAdminDatabase();
+  const existingResponse = await db.listDocuments(databaseId, reviewsCollectionId, [
+    Query.equal("productId", productId),
+    Query.equal("userId", userId),
+    Query.limit(1),
+  ]);
+  const existing = existingResponse.documents[0] as Record<string, unknown> | undefined;
+
+  if (existing && typeof existing.$id === "string") {
+    await db.updateDocument(databaseId, reviewsCollectionId, existing.$id, {
+      userName,
+      comment,
+      rating,
+    });
+  } else {
+    await db.createDocument(databaseId, reviewsCollectionId, `review_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`, {
+      productId,
+      userId,
+      userName,
+      comment,
+      rating,
+    });
+  }
 
   const stats = await syncProductReviewAggregate(productId);
   const reviews = await listReviewsForProduct(productId, 100);

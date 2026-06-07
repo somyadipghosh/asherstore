@@ -1,6 +1,6 @@
 ﻿import { z } from "zod";
 
-import { prisma } from "@/lib/prisma";
+import { createOrder, listOrdersByUserId } from "@/lib/appwrite-orders";
 import { appwriteErrorResponse, getCurrentUser } from "@/lib/appwrite-server";
 
 export const runtime = "nodejs";
@@ -18,34 +18,6 @@ const schema = z.object({
   currency: z.string().default("INR"),
 });
 
-function mapRow(row: {
-  id: string;
-  userId: string;
-  items: unknown;
-  total: number;
-  paymentStatus: string;
-  shippingStatus: string;
-  createdAt: Date;
-}) {
-  const parseItems = (raw: unknown) => {
-    if (Array.isArray(raw)) return raw;
-    if (typeof raw === "string") {
-      try { return JSON.parse(raw) as unknown[]; } catch { return []; }
-    }
-    return [];
-  };
-
-  return {
-    id: row.id,
-    userId: row.userId,
-    items: parseItems(row.items),
-    total: row.total,
-    paymentStatus: row.paymentStatus,
-    shippingStatus: row.shippingStatus,
-    createdAt: row.createdAt.toISOString(),
-  };
-}
-
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) {
@@ -53,13 +25,8 @@ export async function GET() {
   }
 
   try {
-    const rows = await prisma.order.findMany({
-      where: { userId: user.id },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    });
-
-    return Response.json({ orders: rows.map(mapRow) });
+    const rows = await listOrdersByUserId(user.id, 100);
+    return Response.json({ orders: rows });
   } catch (error) {
     return appwriteErrorResponse(error, "Failed to load orders");
   }
@@ -83,19 +50,17 @@ export async function POST(request: Request) {
   }
 
   try {
-    const row = await prisma.order.create({
-      data: {
-        userId: user.id,
-        userEmail: user.email,
-        items: parsed.data.items,
-        total: parsed.data.total,
-        currency: parsed.data.currency,
-        paymentStatus: "created",
-        shippingStatus: "processing",
-      },
+    const row = await createOrder({
+      userId: user.id,
+      userEmail: user.email,
+      items: parsed.data.items,
+      total: parsed.data.total,
+      currency: parsed.data.currency,
+      paymentStatus: "created",
+      shippingStatus: "processing",
     });
 
-    return Response.json({ order: mapRow(row) }, { status: 201 });
+    return Response.json({ order: row }, { status: 201 });
   } catch (error) {
     return appwriteErrorResponse(error, "Failed to create order");
   }
