@@ -1,3 +1,4 @@
+import '@/lib/env-loader'
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { Account, Client, Databases, Query, Users } from "node-appwrite";

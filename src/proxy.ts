@@ -1,3 +1,4 @@
+import '@/lib/env-loader'
 import { clerkMiddleware, createRouteMatcher, clerkClient } from '@clerk/nextjs/server'
 import type { NextRequest, NextFetchEvent } from 'next/server'
 
