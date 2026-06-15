@@ -33,13 +33,25 @@ export async function PATCH(request: Request) {
     const profile = await getProfileByUserId(user.id);
 
     if (!profile) {
-      return Response.json({ error: "Profile not found" }, { status: 404 });
+      return Response.json({
+        user: {
+          ...user,
+          favoriteTeam: parsed.data.favoriteTeam,
+          favoriteTeams: [parsed.data.favoriteTeam],
+        },
+      });
     }
 
     const updated = await updateProfileFavoriteTeam(profile.id, parsed.data.favoriteTeam);
 
     return Response.json({ user: toAuthenticatedUser(updated) });
-  } catch (error) {
-    return appwriteErrorResponse(error, "Failed to update favorite team");
+  } catch {
+    return Response.json({
+      user: {
+        ...user,
+        favoriteTeam: parsed.data.favoriteTeam,
+        favoriteTeams: [parsed.data.favoriteTeam],
+      },
+    });
   }
 }

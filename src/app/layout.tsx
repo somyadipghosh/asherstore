@@ -6,6 +6,7 @@ import { AppProviders } from "@/components/layout/AppProviders";
 import AppwritePing from "@/components/layout/AppwritePing";
 import { Footer } from "@/components/layout/Footer";
 import { Navbar } from "@/components/layout/Navbar";
+import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 const headingFont = Bebas_Neue({
@@ -47,14 +48,17 @@ export default async function RootLayout({
     <html
       lang="en"
       className={`${bodyFont.variable} ${headingFont.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
-      <body className="min-h-full bg-zinc-950 text-zinc-100">
-        <AppProviders hasSessionCookie={hasSessionCookie}>
-          <AppwritePing />
-          <Navbar />
-          <main className="flex min-h-[calc(100vh-73px)] flex-col">{children}</main>
-          <Footer />
-        </AppProviders>
+      <body className="min-h-full bg-zinc-950 text-zinc-100" suppressHydrationWarning>
+        <ClerkProvider>
+          <AppProviders hasSessionCookie={hasSessionCookie}>
+            <AppwritePing />
+            <Navbar />
+            <main className="flex min-h-[calc(100vh-73px)] flex-col">{children}</main>
+            <Footer />
+          </AppProviders>
+        </ClerkProvider>
       </body>
     </html>
   );

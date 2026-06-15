@@ -1,4 +1,4 @@
-﻿import { Query } from "node-appwrite";
+import { Query } from "node-appwrite";
 
 import { createAdminDatabase } from "@/lib/appwrite-server";
 import { products as demoProducts } from "@/lib/data";
@@ -190,7 +190,7 @@ export async function listProducts(limit = 200): Promise<Product[]> {
     setCachedProducts(cacheKey, products);
     return products;
   } catch {
-    return listDemoProducts(limit);
+    return [];
   }
 }
 
@@ -205,8 +205,7 @@ export async function listBestSellers(limit = 12): Promise<Product[]> {
     setCachedProducts(cacheKey, products);
     return products;
   } catch {
-    const all = await listProducts();
-    return all.filter((item) => item.isBestSeller).slice(0, limit);
+    return [];
   }
 }
 
@@ -221,8 +220,7 @@ export async function listMatchdayDeals(limit = 12): Promise<Product[]> {
     setCachedProducts(cacheKey, products);
     return products;
   } catch {
-    const all = await listProducts();
-    return all.filter((item) => item.isMatchPick).slice(0, limit);
+    return [];
   }
 }
 
@@ -239,7 +237,7 @@ export async function listProductsByTeam(team: string, limit = 200): Promise<Pro
     setCachedProducts(cacheKey, products);
     return products;
   } catch {
-    return listDemoProducts(limit).filter((item) => item.team === team);
+    return [];
   }
 }
 
@@ -248,16 +246,27 @@ export async function getProductById(productId: string): Promise<Product | null>
     const db = createAdminDatabase();
     const row = await db.getDocument(databaseId, productsCollectionId, productId);
     const product = mapProductDocument(row as Record<string, unknown>);
-    if (!product) return getDemoProductById(productId);
+    if (!product) return null;
 
-    const [stats, reviews] = await Promise.all([
-      getReviewStatsForProduct(product.id),
-      listReviewsForProduct(product.id, 100),
-    ]);
+    let rating = product.rating;
+    let reviewCount = product.reviewCount || 0;
+    let reviews: Review[] = [];
 
-    return { ...product, rating: stats.averageRating, reviewCount: stats.reviewCount, reviews };
+    try {
+      const [stats, list] = await Promise.all([
+        getReviewStatsForProduct(product.id),
+        listReviewsForProduct(product.id, 100),
+      ]);
+      rating = stats.averageRating;
+      reviewCount = stats.reviewCount;
+      reviews = list;
+    } catch {
+      // Ignore reviews lookup failure gracefully
+    }
+
+    return { ...product, rating, reviewCount, reviews };
   } catch {
-    return getDemoProductById(productId);
+    return null;
   }
 }
 

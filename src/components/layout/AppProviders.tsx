@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { Toaster } from "react-hot-toast";
+import { useUser } from "@clerk/nextjs";
 
 import { useShopStore } from "@/store/useShopStore";
 
@@ -16,10 +17,14 @@ export function AppProviders({
   const setWishlist = useShopStore((state) => state.setWishlist);
   const logout = useShopStore((state) => state.logout);
 
+  const { isLoaded, isSignedIn } = useUser();
+
   useEffect(() => {
     let active = true;
 
-    if (!hasSessionCookie) {
+    if (!isLoaded) return;
+
+    if (!hasSessionCookie && !isSignedIn) {
       logout();
       return () => {
         active = false;
@@ -77,7 +82,7 @@ export function AppProviders({
     return () => {
       active = false;
     };
-  }, [hasSessionCookie, logout, setAuth, setWishlist]);
+  }, [hasSessionCookie, isLoaded, isSignedIn, logout, setAuth, setWishlist]);
 
   return (
     <>

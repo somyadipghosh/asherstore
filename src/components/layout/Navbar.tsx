@@ -6,6 +6,7 @@ import { Menu, Search, ShoppingBag, User, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
+import { Show, SignInButton, UserButton } from "@clerk/nextjs";
 
 import type { Product } from "@/lib/types";
 import { useShopStore } from "@/store/useShopStore";
@@ -161,9 +162,19 @@ export function Navbar() {
         </div>
 
         <div className="flex items-center gap-2 text-zinc-200">
-          <Link href="/dashboard" className="rounded-lg border border-white/10 p-2 hover:border-rose-400" title="Account" onClick={closeAll}>
-            <User size={16} />
-          </Link>
+          <Show when="signed-in">
+            <Link href="/dashboard" className="rounded-lg border border-white/10 p-2 hover:border-rose-400" title="Dashboard" onClick={closeAll}>
+              <User size={16} />
+            </Link>
+            <UserButton />
+          </Show>
+          <Show when="signed-out">
+            <SignInButton mode="modal">
+              <button className="rounded-lg border border-white/10 p-2 hover:border-rose-400 cursor-pointer animate-fade-in" title="Sign In">
+                <User size={16} />
+              </button>
+            </SignInButton>
+          </Show>
           <Link href="/cart" className="relative rounded-lg border border-white/10 p-2 hover:border-rose-400" onClick={closeAll}>
             <ShoppingBag size={16} />
             {cartCount > 0 ? (
@@ -275,13 +286,26 @@ export function Navbar() {
 
             {/* Drawer footer links */}
             <div className="border-t border-white/10 px-3 py-4 space-y-1">
-              <Link
-                href="/dashboard"
-                className="flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-zinc-400 transition hover:bg-zinc-900 hover:text-white"
-                onClick={closeAll}
-              >
-                <User size={15} /> Account
-              </Link>
+              <Show when="signed-in">
+                <Link
+                  href="/dashboard"
+                  className="flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-zinc-400 transition hover:bg-zinc-900 hover:text-white"
+                  onClick={closeAll}
+                >
+                  <User size={15} /> Dashboard
+                </Link>
+                <div className="flex items-center gap-3 px-3 py-2.5">
+                  <UserButton />
+                  <span className="text-sm text-zinc-400 font-medium">Manage Account</span>
+                </div>
+              </Show>
+              <Show when="signed-out">
+                <SignInButton mode="modal">
+                  <button className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-zinc-400 transition hover:bg-zinc-900 hover:text-white text-left cursor-pointer">
+                    <User size={15} /> Sign In
+                  </button>
+                </SignInButton>
+              </Show>
               <Link
                 href="/cart"
                 className="flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-zinc-400 transition hover:bg-zinc-900 hover:text-white"

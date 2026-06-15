@@ -1,6 +1,7 @@
-﻿import { cookies } from "next/headers";
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { Account, Client, Databases, Query, Users } from "node-appwrite";
+import { auth, currentUser } from "@clerk/nextjs/server";
 
 import { verifyToken } from "@/lib/auth";
 
@@ -320,6 +321,34 @@ export async function updateProfileOAuthIdentity(
 // ---------------------------------------------------------------------------
 
 export async function getCurrentUser(): Promise<AuthenticatedUser | null> {
+  try {
+    const { userId } = await auth();
+    if (userId) {
+      const clerkUser = await currentUser();
+      if (clerkUser) {
+        const email = clerkUser.emailAddresses[0]?.emailAddress || "";
+        const name = `${clerkUser.firstName || ""} ${clerkUser.lastName || ""}`.trim() || "User";
+        const adminEmails = (process.env.ADMIN_EMAILS || "")
+          .split(",")
+          .map((e) => e.trim().toLowerCase());
+        const role: AppRole = adminEmails.includes(email.toLowerCase()) ? "admin" : "user";
+
+        return {
+          id: clerkUser.id,
+          name,
+          email,
+          role,
+          favoriteTeam: "",
+          favoriteTeams: [],
+          phone: clerkUser.phoneNumbers[0]?.phoneNumber || "",
+          newsletter: false,
+        };
+      }
+    }
+  } catch (error) {
+    console.error("Clerk auth check failed in getCurrentUser:", error);
+  }
+
   const token = await getSessionSecretFromCookies();
   if (!token) return null;
 

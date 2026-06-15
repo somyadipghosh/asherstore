@@ -9,6 +9,7 @@ import Image from "next/image";
 import { ProductCard } from "@/components/ui/ProductCard";
 import type { JerseySize, Product, UserProfile } from "@/lib/types";
 import { formatINR, resolveProductImageSrc } from "@/lib/utils";
+import { useClerk } from "@clerk/nextjs";
 import { useShopStore } from "@/store/useShopStore";
 
 interface DashboardOrder {
@@ -27,6 +28,7 @@ interface DashboardOrder {
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { signOut } = useClerk();
   const [loading, setLoading] = useState(true);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [teamProductsLoading, setTeamProductsLoading] = useState(true);
@@ -206,15 +208,14 @@ export default function DashboardPage() {
   }, []);
 
   async function handleLogout() {
-    const res = await fetch("/api/auth/logout", { method: "POST" });
-    if (!res.ok) {
+    try {
+      await signOut();
+      clearAuth();
+      toast.success("You have been logged out");
+      router.push("/login");
+    } catch {
       toast.error("Logout failed. Try again.");
-      return;
     }
-
-    clearAuth();
-    toast.success("You have been logged out");
-    router.push("/login");
   }
 
   async function handleFavoriteTeamSave(event: React.FormEvent<HTMLFormElement>) {

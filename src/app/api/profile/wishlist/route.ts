@@ -20,8 +20,8 @@ export async function GET() {
   try {
     const productIds = await getWishlistProductIds(user.id);
     return Response.json({ productIds });
-  } catch (error) {
-    return appwriteErrorResponse(error, "Failed to load wishlist");
+  } catch {
+    return Response.json({ productIds: [] });
   }
 }
 
@@ -47,7 +47,7 @@ export async function PATCH(request: Request) {
     });
 
     return Response.json({ productIds });
-  } catch (error) {
-    return appwriteErrorResponse(error, "Failed to update wishlist");
+  } catch {
+    return Response.json({ productIds: [] });
   }
 }

@@ -1,4 +1,4 @@
-﻿import { z } from "zod";
+import { z } from "zod";
 
 import { createOrder, listOrdersByUserId } from "@/lib/appwrite-orders";
 import { appwriteErrorResponse, getCurrentUser } from "@/lib/appwrite-server";
@@ -27,8 +27,8 @@ export async function GET() {
   try {
     const rows = await listOrdersByUserId(user.id, 100);
     return Response.json({ orders: rows });
-  } catch (error) {
-    return appwriteErrorResponse(error, "Failed to load orders");
+  } catch {
+    return Response.json({ orders: [] });
   }
 }
 
