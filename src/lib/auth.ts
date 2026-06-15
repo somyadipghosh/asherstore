@@ -1,3 +1,4 @@
+import '@/lib/env-loader'
 import jwt from "jsonwebtoken";
 
 const JWT_SECRET = process.env.JWT_SECRET || "demo_jwt_secret_change_me";

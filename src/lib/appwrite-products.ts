@@ -1,3 +1,4 @@
+import '@/lib/env-loader'
 import { Query } from "node-appwrite";
 
 import { createAdminDatabase } from "@/lib/appwrite-server";

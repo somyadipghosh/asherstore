@@ -1,4 +1,5 @@
-﻿import { Query } from "node-appwrite";
+import '@/lib/env-loader'
+import { Query } from "node-appwrite";
 import type { Review } from "@/lib/types";
 
 import { createAdminDatabase } from "@/lib/appwrite-server";
