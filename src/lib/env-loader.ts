@@ -2,8 +2,6 @@ import fs from 'fs';
 import path from 'path';
 
 export function loadEnvManual() {
-  if (process.env.CLERK_SECRET_KEY) return;
-  
   const pathsToTry = [
     path.join(/*turbopackIgnore: true*/ process.cwd(), '.env'),
     path.join(/*turbopackIgnore: true*/ process.cwd(), '..', '.env'),
@@ -29,13 +27,11 @@ export function loadEnvManual() {
           if (index > 0) {
             const key = trimmed.substring(0, index).trim();
             let val = trimmed.substring(index + 1).trim();
-            // Remove quotes if present
             if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
               val = val.substring(1, val.length - 1);
             }
-            if (!process.env[key]) {
-              process.env[key] = val;
-            }
+            // Always overwrite to ensure variables from committed .env take precedence over empty/default container envs
+            process.env[key] = val;
           }
         });
         console.log(`Loaded env variables manually from: ${envPath}`);
@@ -47,5 +43,4 @@ export function loadEnvManual() {
   }
 }
 
-// Automatically invoke on import
 loadEnvManual();
