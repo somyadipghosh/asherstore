@@ -1,10 +1,12 @@
-﻿export const runtime = "nodejs";
+import '@/lib/env-loader'
+export const runtime = "nodejs";
 
-import { writeFile } from "fs/promises";
-import { join } from "path";
 import crypto from "crypto";
+import { Storage } from "node-appwrite";
+import { InputFile } from "node-appwrite/file";
 
 import { assertAdminAccess } from "@/lib/admin-guard";
+import { createAdminClient } from "@/lib/appwrite-server";
 
 const ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
@@ -61,10 +63,18 @@ export async function POST(request: Request) {
     const ext = getExtension(mimeType);
     const filename = `${fileId}.${ext}`;
 
-    const uploadDir = join(process.cwd(), "public", "uploads");
-    const filePath = join(uploadDir, filename);
+    const { client } = createAdminClient();
+    const storage = new Storage(client);
+    const bucketId = process.env.APPWRITE_PRODUCTS_BUCKET_ID || "products-images";
 
-    await writeFile(filePath, buffer);
+    const inputFile = InputFile.fromBuffer(buffer, filename);
+
+    await storage.createFile({
+      bucketId,
+      fileId,
+      file: inputFile,
+      permissions: ["read(\"any\")"],
+    });
 
     const url = `/api/images/${encodeURIComponent(fileId)}`;
 
